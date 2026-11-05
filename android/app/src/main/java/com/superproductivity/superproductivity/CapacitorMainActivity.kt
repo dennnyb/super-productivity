@@ -16,6 +16,7 @@ import android.widget.Toast
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.anggrayudi.storage.SimpleStorageHelper
 import com.getcapacitor.BridgeActivity
+import com.superproductivity.superproductivity.app.LaunchUrlReplayGuard
 import com.superproductivity.superproductivity.plugins.NavigationBarPlugin
 import com.superproductivity.superproductivity.plugins.SafBridgePlugin
 import com.superproductivity.superproductivity.service.BackgroundSyncCredentialStore
@@ -143,6 +144,19 @@ class CapacitorMainActivity : BridgeActivity() {
         registerPlugin(WebDavHttpPlugin::class.java)
         registerPlugin(NavigationBarPlugin::class.java)
 
+        // BridgeActivity.load() replays the launch intent through onNewIntent
+        // during super.onCreate(). Strip stale navigation before that happens,
+        // both on recreation and when Android relaunches after a package update.
+        if (savedInstanceState != null) {
+            intent?.data = null
+            intent?.removeExtra(TaskListWidgetProvider.EXTRA_OPEN_PROJECT_ID)
+        } else if (intent != null &&
+            !LaunchUrlReplayGuard.shouldDispatchFreshLaunch(this)
+        ) {
+            intent.data = null
+            intent.removeExtra(TaskListWidgetProvider.EXTRA_OPEN_PROJECT_ID)
+        }
+
         try {
             super.onCreate(savedInstanceState)
         } catch (e: Throwable) {
@@ -259,13 +273,6 @@ class CapacitorMainActivity : BridgeActivity() {
         )
         isWidgetProjectOpenDrainReceiverRegistered = true
 
-        // Direct widget activity PendingIntents arrive here on both cold and warm
-        // starts. Keep the project ID in the native queue for the existing pull path;
-        // the drain broadcast additionally wakes an already-running frontend.
-        if (savedInstanceState == null) {
-            handleWidgetProjectOpenIntent(intent)
-        }
-
         // Show startup overlay for quick task entry while Angular loads.
         // Only on fresh cold start — not on config-change recreation.
         if (savedInstanceState == null) {
@@ -346,10 +353,14 @@ class CapacitorMainActivity : BridgeActivity() {
     private fun handleWidgetProjectOpenIntent(intent: Intent) {
         val projectId = intent.getStringExtra(TaskListWidgetProvider.EXTRA_OPEN_PROJECT_ID)
             ?: return
+        intent.removeExtra(TaskListWidgetProvider.EXTRA_OPEN_PROJECT_ID)
+        // Recents can re-deliver the original widget tap; it is not a new intent.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) {
+            return
+        }
         TaskListWidgetProvider.queueProjectToOpen(this, projectId)
         LocalBroadcastManager.getInstance(this)
             .sendBroadcast(Intent(TaskListWidgetProvider.ACTION_WIDGET_PROJECT_OPEN_DRAIN))
-        intent.removeExtra(TaskListWidgetProvider.EXTRA_OPEN_PROJECT_ID)
     }
 
     fun getStartupOverlayPartialText(): String? {
